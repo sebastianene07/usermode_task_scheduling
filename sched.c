@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 
 #include <sys/types.h>
 #include <sys/time.h>
@@ -15,6 +16,7 @@
 #include <unistd.h>
 #include <ucontext.h>
 
+#define STACK_SIZE												(2048)
 #define STACK_ALIGNMENT_BYTES             (32)
 #define SCHEDULING_TASKS_NUMBER           (5)
 #define SCHEDULING_TIME_SLICE_MS          (100)
@@ -52,10 +54,16 @@ static sem_t g_console_sema;
  * Private Functions
  ****************************************************************************/
 
-static void print_me(char *msg)
+static void print_me(char *fmt, ...)
 {
+	va_list arg_list;
+
   sem_wait(&g_console_sema);
-  printf(msg);
+
+	va_start(arg_list, fmt);
+  vprintf(fmt, arg_list);
+	va_end(arg_list);
+
   sem_post(&g_console_sema);
 }
 
@@ -93,8 +101,7 @@ static int task_create(uint16_t stack_size, void (*entry_point)(void))
   task_context->uc_stack.ss_size = stack_size -
     (STACK_ALIGNMENT_BYTES - ((uint32_t)stack_ptr) % STACK_ALIGNMENT_BYTES);
   task_context->uc_stack.ss_flags = 0;
-
-  task_context->uc_link        = &g_context_array[g_registered_task_num - 1].context;
+  task_context->uc_link           = &g_context_array[g_registered_task_num - 1].context;
   makecontext(task_context, (void *)entry_point, 1);
 
   g_context_array[g_registered_task_num].task_state          = TASK_START;
@@ -202,38 +209,20 @@ static int setup_timer(void)
   return ret;
 }
 
-void task_1(void)
+void task(void)
 {
   for (;;) {
-    print_me("[TASK_1] Running\n");
+    print_me("[TASK %d]  Running\n", g_active_task);
     sleep(1);
   }
 }
-
-void task_2(void)
-{
-  for (;;) {
-    print_me("[TASK_2] Running\n");
-    sleep(1);
-  }
-}
-
-void task_3(void)
-{
-  for (;;) {
-    print_me("[TASK_3] Running\n");
-    sleep(1);
- }
-}
-
 
 static void setup_scheduler(void)
 {
   is_scheduler_active = true;
 
-  task_create(2048, task_1);
-  task_create(2048, task_2);
-  task_create(2048, task_3);
+	for (int i = 1; i < SCHEDULING_TASKS_NUMBER; i++)
+	  task_create(STACK_SIZE, task);
 
   sem_init(&g_console_sema, 0, 1);
 }
