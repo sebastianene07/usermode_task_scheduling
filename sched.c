@@ -20,6 +20,10 @@
 #define SCHEDULING_TIME_SLICE_MS					(100)
 #define _err(fmt, ...) fprintf(stderr, "[ERROR] "fmt, __VA_ARGS__)
 
+/****************************************************************************
+ * Private Data Types
+ ****************************************************************************/
+
 typedef enum state_e {
 	TASK_INVALID_STATE = 0,
 	TASK_START,
@@ -34,13 +38,21 @@ typedef struct tcb_s {
 	uint8_t *unaligned_stack_ptr;
 } tcb_t;
 
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
 static pid_t g_parent_pid;
 static volatile bool is_scheduler_active;
 static tcb_t g_context_array[SCHEDULING_TASKS_NUMBER];
 static volatile uint8_t g_active_task;
 static sem_t g_console_sema;
 
-void print_me(char *msg)
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
+
+static void print_me(char *msg)
 {
 	sem_wait(&g_console_sema);
 	printf(msg);
