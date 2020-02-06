@@ -16,10 +16,10 @@
 #include <unistd.h>
 #include <ucontext.h>
 
-#define STACK_SIZE												(2048)
+#define STACK_SIZE                        (4096)
 #define STACK_ALIGNMENT_BYTES             (32)
-#define SCHEDULING_TASKS_NUMBER           (5)
-#define SCHEDULING_TIME_SLICE_MS          (100)
+#define SCHEDULING_TASKS_NUMBER           (10)
+#define SCHEDULING_TIME_SLICE_MS          (10)
 #define _err(fmt, ...) fprintf(stderr, "[ERROR] "fmt, __VA_ARGS__)
 
 /****************************************************************************
@@ -56,13 +56,13 @@ static sem_t g_console_sema;
 
 static void print_me(char *fmt, ...)
 {
-	va_list arg_list;
+  va_list arg_list;
 
   sem_wait(&g_console_sema);
 
-	va_start(arg_list, fmt);
+  va_start(arg_list, fmt);
   vprintf(fmt, arg_list);
-	va_end(arg_list);
+  va_end(arg_list);
 
   sem_post(&g_console_sema);
 }
@@ -124,6 +124,7 @@ errout_with_ucontext:
 static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
 {
   //printf("[PARENT] Signal handler: signo %d context %p\n", sig, old_ucontext);
+  int old_active_task = g_active_task;
 
   /* Check for exit request */
   if (sig == SIGINT) {
@@ -132,7 +133,6 @@ static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
 
   /* Save the context in the global context array list */
 
-  memcpy(&g_context_array[g_active_task].context, old_ucontext, sizeof(ucontext_t));
   g_context_array[g_active_task].task_state = TASK_RESUME;
 
   do {
@@ -145,16 +145,11 @@ static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
   //       g_context_array[g_active_task].task_state);
 
   g_context_array[g_active_task].task_state = TASK_RUNNING;
-  setcontext(&g_context_array[g_active_task].context);
+  swapcontext(&g_context_array[old_active_task].context, &g_context_array[g_active_task].context);
 }
 
 /* Parent signal handler that does the context switch
  */
-static void child_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
-{
-  //printf("[CHILD] Signal handler: signo %d\n", sig);
-  kill(g_parent_pid, sig);
-}
 
 /* Set up SIGALRM signal handler
  */
@@ -188,8 +183,8 @@ static int setup_signals(void (*action)(int, siginfo_t *, void *))
   return ret;
 }
 
-/* Set up a timer to send periodic signals from the child process
- * to the parent
+/* Set up a timer to send periodic signals
+ *
  */
 static int setup_timer(void)
 {
@@ -211,9 +206,9 @@ static int setup_timer(void)
 
 void task(void)
 {
+  uint32_t index = 0;
   for (;;) {
-    print_me("[TASK %d]  Running\n", g_active_task);
-    sleep(1);
+    print_me("[TASK %d] Running cycle %d\n", g_active_task, index++);
   }
 }
 
@@ -221,8 +216,8 @@ static void setup_scheduler(void)
 {
   is_scheduler_active = true;
 
-	for (int i = 1; i < SCHEDULING_TASKS_NUMBER; i++)
-	  task_create(STACK_SIZE, task);
+  for (int i = 1; i < SCHEDULING_TASKS_NUMBER; i++)
+    task_create(STACK_SIZE, task);
 
   sem_init(&g_console_sema, 0, 1);
 }
@@ -233,58 +228,23 @@ int main(int argc, char **argv)
 {
   int wstatus, ret;
 
-  /* Create a child process that sends periodic signals to the parent
-   * to interrupt it's execution flow and simulate context switching.
-   */
+  setup_scheduler();
+  setup_signals(parent_signal_handler);
+  setup_timer();
 
-  pid_t pid = fork();
-  if (pid < 0) {
-    _err("%d create fork()\n", pid);
-  } else if (pid == 0) {
+  /* Run the idle loop */
 
-    g_parent_pid = getppid();
-    printf("[Child] parent process is: %d\n", g_parent_pid);
-
-    setup_signals(child_signal_handler);
-    ret = setup_timer();
-    if (ret < 0) {
-      return ret;
-    }
-
-    for (;;) { /* Do nothing */ }
-
-  } else {
-
-    setup_scheduler();
-    setup_signals(parent_signal_handler);
-
-    /* Run the idle loop */
-
-    while (is_scheduler_active) {
-      ;;
-    }
-
-    printf("[PARENT] Scheduler stopped\n");
-
-    /* Wait for the child exit code */
-
-    do {
-      ret = waitpid(pid, &wstatus, WUNTRACED | WCONTINUED);
-      if (ret < 0) {
-        _err("%d wait for child process\n", ret);
-      }
-
-      if (WIFEXITED(wstatus)) {
-        printf("[PARENT] child exited, status=%d\n", WEXITSTATUS(wstatus));
-      } else if (WIFSIGNALED(wstatus)) {
-        printf("[PARENT] child killed by signal %d\n", WTERMSIG(wstatus));
-      } else if (WIFSTOPPED(wstatus)) {
-        printf("[PARENT] child stopped by signal %d\n", WSTOPSIG(wstatus));
-      } else if (WIFCONTINUED(wstatus)) {
-        printf("[PARENT] child continued\n");
-      }
-    } while (!WIFEXITED(wstatus) && !WIFSIGNALED(wstatus));
+  while (is_scheduler_active) {
+    ;;
   }
+
+  printf("[PARENT] Scheduler stopped\n");
+
+  /* Cancel timer */
+
+  struct itimerval it;
+  memset(&it, 0, sizeof(struct itimerval));
+  setitimer(ITIMER_REAL, &it, NULL);
 
   return 0;
 }
