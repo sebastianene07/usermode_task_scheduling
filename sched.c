@@ -18,8 +18,8 @@
 
 #define STACK_SIZE                        (4096)
 #define STACK_ALIGNMENT_BYTES             (32)
-#define SCHEDULING_TASKS_NUMBER           (10)
-#define SCHEDULING_TIME_SLICE_MS          (10)
+#define SCHEDULING_TASKS_NUMBER           (20)
+#define SCHEDULING_TIME_SLICE_MS          (1)
 #define _err(fmt, ...) fprintf(stderr, "[ERROR] "fmt, __VA_ARGS__)
 
 /****************************************************************************
@@ -245,6 +245,11 @@ int main(int argc, char **argv)
   struct itimerval it;
   memset(&it, 0, sizeof(struct itimerval));
   setitimer(ITIMER_REAL, &it, NULL);
+
+  /* Free task resources */
+
+  for (int i = 1; i < SCHEDULING_TASKS_NUMBER; i++)
+    free(g_context_array[i].unaligned_stack_ptr);
 
   return 0;
 }
