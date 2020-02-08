@@ -1,6 +1,6 @@
 #include <errno.h>
 
-#include <semaphore.h>
+#include <sys/semaphore.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,9 +16,9 @@
 #include <unistd.h>
 #include <ucontext.h>
 
-#define STACK_SIZE                        (4096)
-#define STACK_ALIGNMENT_BYTES             (32)
-#define SCHEDULING_TASKS_NUMBER           (20)
+#define STACK_SIZE                        (128 * 1024)
+#define STACK_ALIGNMENT_BYTES             (8)
+#define SCHEDULING_TASKS_NUMBER           (10)
 #define SCHEDULING_TIME_SLICE_MS          (1)
 #define _err(fmt, ...) fprintf(stderr, "[ERROR] "fmt, __VA_ARGS__)
 
@@ -67,14 +67,13 @@ static void print_me(char *fmt, ...)
   sem_post(&g_console_sema);
 }
 
-
 /* The registered task counter starts from 1 as the first one is the IDLE task
  */
 static volatile uint8_t g_registered_task_num = 1;
 
 /* Create a new task and specify the entry point
  */
-static int task_create(uint16_t stack_size, void (*entry_point)(void))
+static int task_create(uint32_t stack_size, void (*entry_point)(void))
 {
   uint8_t *aligned_stack_addr;
 
@@ -95,11 +94,11 @@ static int task_create(uint16_t stack_size, void (*entry_point)(void))
   }
 
   aligned_stack_addr = stack_ptr +
-    (STACK_ALIGNMENT_BYTES - ((uint32_t)stack_ptr) % STACK_ALIGNMENT_BYTES);
+    (STACK_ALIGNMENT_BYTES - ((uint64_t)stack_ptr) % STACK_ALIGNMENT_BYTES);
 
   task_context->uc_stack.ss_sp   = aligned_stack_addr;
   task_context->uc_stack.ss_size = stack_size -
-    (STACK_ALIGNMENT_BYTES - ((uint32_t)stack_ptr) % STACK_ALIGNMENT_BYTES);
+    (STACK_ALIGNMENT_BYTES - ((uint64_t)stack_ptr) % STACK_ALIGNMENT_BYTES);
   task_context->uc_stack.ss_flags = 0;
   task_context->uc_link           = &g_context_array[g_registered_task_num - 1].context;
   makecontext(task_context, (void *)entry_point, 1);
@@ -123,7 +122,7 @@ errout_with_ucontext:
  */
 static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
 {
-  //printf("[PARENT] Signal handler: signo %d context %p\n", sig, old_ucontext);
+  printf("[PARENT] Signal handler: signo %d context %p\n", sig, old_ucontext);
   int old_active_task = g_active_task;
 
   /* Check for exit request */
@@ -146,6 +145,7 @@ static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
 
   g_context_array[g_active_task].task_state = TASK_RUNNING;
   swapcontext(&g_context_array[old_active_task].context, &g_context_array[g_active_task].context);
+//  setcontext(&g_context_array[g_active_task].context);
 }
 
 /* Parent signal handler that does the context switch

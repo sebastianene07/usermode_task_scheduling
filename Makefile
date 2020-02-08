@@ -1,5 +1,5 @@
 all:
-	gcc sched.c -g -m32 -pthread
+	gcc sched.c -g -pthread -D_XOPEN_SOURCE
 
 clean:
 	rm -f a.out
