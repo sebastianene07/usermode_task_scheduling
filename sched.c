@@ -1,6 +1,11 @@
 #include <errno.h>
 
+#ifdef __APPLE__
 #include <sys/semaphore.h>
+#else
+#include <semaphore.h>
+#endif
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,7 +150,6 @@ static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
 
   g_context_array[g_active_task].task_state = TASK_RUNNING;
   swapcontext(&g_context_array[old_active_task].context, &g_context_array[g_active_task].context);
-//  setcontext(&g_context_array[g_active_task].context);
 }
 
 /* Parent signal handler that does the context switch
@@ -161,7 +165,7 @@ static int setup_signals(void (*action)(int, siginfo_t *, void *))
 
   act.sa_sigaction = action;
   sigemptyset(&act.sa_mask);
-  act.sa_flags = SA_RESTART | SA_SIGINFO;
+  act.sa_flags = SA_SIGINFO;
 
   sigemptyset(&set);
   sigaddset(&set, SIGALRM);
