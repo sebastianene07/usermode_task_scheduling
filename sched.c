@@ -33,7 +33,7 @@
 
 /* Number of simulated tasks */
 
-#define SCHEDULING_TASKS_NUMBER           (10)
+#define SCHEDULING_TASKS_NUMBER           (3)
 
 /* The preemption tick interval in miliseconds */
 
@@ -45,7 +45,7 @@
 
 /* Max recursive deth */
 
-#define TASK_RANDOM_RECURSIVE_MAX_DEPTH   (1000)
+#define TASK_RANDOM_RECURSIVE_MAX_DEPTH   (4000)
 
 /* Helper macro for errors logging */
 
@@ -70,6 +70,7 @@ typedef enum state_e {
 
 typedef struct tcb_s {
   ucontext_t context;
+  uint32_t t_pid;
   state_t task_state;
   uint8_t stack[STACK_SIZE];
 } tcb_t;
@@ -98,26 +99,32 @@ static volatile uint8_t g_active_task;
 
 static sem_t g_console_sema;
 
+/* The main context is the point where we return when we are done with the 
+ * simulation.
+ */
+
+static ucontext_t g_main_context;
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
 
+/* Get the next task to run
+ */
 static int get_next_task_to_run()
 {
   return rand() % SCHEDULING_TASKS_NUMBER;
 }
 
+/* A safe version of the printf to call from handler
+ */
 static void print_me(char *fmt, ...)
 {
   va_list arg_list;
 
-  sem_wait(&g_console_sema);
-
   va_start(arg_list, fmt);
   vprintf(fmt, arg_list);
   va_end(arg_list);
-
-  sem_post(&g_console_sema);
 }
 
 /* The registered task counter starts from 1 as the first one is the IDLE task
@@ -126,11 +133,12 @@ static volatile uint8_t g_registered_task_num = 1;
 
 /* Create a new task and specify the entry point
  */
-static int task_create(uint32_t stack_size, void (*entry_point)(void))
+static int task_create(uint32_t stack_size, void (*entry_point)(void),
+    uint32_t pid)
 {
   uint8_t *aligned_stack_addr;
 
-  ucontext_t *task_context = &g_context_array[g_registered_task_num].context;
+  ucontext_t *task_context = &g_context_array[pid].context;
   int ret = getcontext(task_context);
   if (ret < 0) {
     _err("%d get current context\n", ret);
@@ -138,31 +146,41 @@ static int task_create(uint32_t stack_size, void (*entry_point)(void))
 
   /* Allocate a new stack for this task and align the address */
 
-  uint8_t *stack_ptr = g_context_array[g_registered_task_num].stack;
+  uint8_t *stack_ptr = g_context_array[pid].stack;
 
   aligned_stack_addr = stack_ptr +
     (STACK_ALIGNMENT_BYTES - ((uint64_t)stack_ptr) % STACK_ALIGNMENT_BYTES);
 
+  g_context_array[pid].t_pid     = pid;
   task_context->uc_stack.ss_sp   = aligned_stack_addr;
   task_context->uc_stack.ss_size = stack_size -
     (STACK_ALIGNMENT_BYTES - ((uint64_t)stack_ptr) % STACK_ALIGNMENT_BYTES);
   task_context->uc_stack.ss_flags = 0;
-  task_context->uc_link           = &g_context_array[g_registered_task_num - 1].context;
-  makecontext(task_context, (void *)entry_point, 1);
+  task_context->uc_link           = pid == 0 ? &g_main_context :
+    &g_context_array[pid].context;
 
-  g_context_array[g_registered_task_num].task_state          = TASK_START;
+  makecontext(task_context, (void *)entry_point, 0);
 
-  printf("[PARENT] Created task num: %d\n", g_registered_task_num);
+  g_context_array[pid].task_state = TASK_START;
+
+  printf("[MAIN] Created task num: %d\n", pid);
   g_registered_task_num++;
 
   return 0;
+}
+
+/* Verify is a pointer is on the stack of a task received as argument
+ */
+static bool is_sp_in_current_task(struct tcb_s *task, uintptr_t sp)
+{
+  return (uintptr_t)&task->stack[0] <= sp &&
+         sp < (uintptr_t)&task->stack[STACK_SIZE];
 }
 
 /* Parent signal handler that does the context switch
  */
 static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
 {
-//  printf("[PARENT] Signal handler: signo %d context %p\n", sig, old_ucontext);
   int old_active_task = g_active_task;
 
   /* Check for exit request */
@@ -174,22 +192,33 @@ static void parent_signal_handler(int sig, siginfo_t *si, void *old_ucontext)
 
   g_context_array[g_active_task].task_state = TASK_RESUME;
 
+  if (is_sp_in_current_task(&g_context_array[g_active_task], (uintptr_t)&old_active_task))
+    {
+      printf("[Handler] is on the stack for task %d\n", g_active_task);
+    }
+  else
+    {
+      printf("[Handler] is NOT on the stack for task %d\n", g_active_task);
+      printf("SP: %p task_top_stack: %p task_bottom_stack: %p\n",
+             &old_active_task,
+             &g_context_array[g_active_task].stack[STACK_SIZE],
+             &g_context_array[g_active_task].stack[0]);
+    }
+
   do {
     /* Look at the next task to execute */
 
     g_active_task = (g_active_task + get_next_task_to_run()) % SCHEDULING_TASKS_NUMBER;
   } while (g_context_array[g_active_task].task_state == TASK_INVALID_STATE);
 
-  printf("[PARENT] Next task to run : %d state %d\n", g_active_task,
+  printf("[Handler] Next task to run : %d state %d\n", g_active_task,
          g_context_array[g_active_task].task_state);
 
   g_context_array[g_active_task].task_state = TASK_RUNNING;
 
   ucontext_t *uc = (ucontext_t *)old_ucontext;
-//  memcpy(&g_context_array[old_active_task].context.uc_mcontext, &uc->uc_mcontext, sizeof(uc->uc_mcontext));
-
-//  setcontext(&g_context_array[g_active_task].context);
-  swapcontext(&g_context_array[old_active_task].context, &g_context_array[g_active_task].context);
+  swapcontext(&g_context_array[old_active_task].context,
+              &g_context_array[g_active_task].context);
 }
 
 /* Parent signal handler that does the context switch
@@ -261,12 +290,26 @@ static void task(void)
   unsigned int p;
   for (;;) {
     int r_rec =  rand_r(&p) % TASK_RANDOM_RECURSIVE_MAX_DEPTH;
-    print_me("[TASK %d] Running cycle %d recursive: %d\n", g_active_task,
-             index++, r_rec);
-
     recursive_task(r_rec);
     sched_yield();
   }
+}
+
+static void task_idle(void)
+{
+  printf("[IDLE] start runing\n");
+
+  setup_timer();
+
+  while (is_scheduler_active) {
+    ;;
+  }
+
+  /* Cancel timer */
+
+  struct itimerval it;
+  memset(&it, 0, sizeof(struct itimerval));
+  setitimer(ITIMER_REAL, &it, NULL);
 }
 
 /* Initialize the task context
@@ -275,9 +318,11 @@ static void task(void)
 static void setup_scheduler(void)
 {
   is_scheduler_active = true;
+ 
+  task_create(STACK_SIZE, task_idle, 0);
 
   for (int i = 1; i < SCHEDULING_TASKS_NUMBER; i++)
-    task_create(STACK_SIZE, task);
+    task_create(STACK_SIZE, task, i);
 
   sem_init(&g_console_sema, 0, 1);
 }
@@ -288,24 +333,18 @@ int main(int argc, char **argv)
 {
   int wstatus, ret;
 
+  /* Seed the randome number generator */
+
   srand(time(NULL));
+
   setup_scheduler();
   setup_signals(parent_signal_handler);
-  setup_timer();
 
-  /* Run the idle loop */
+  /* Switch context to idle task and start running */
 
-  while (is_scheduler_active) {
-    ;;
-  }
-
-  printf("[PARENT] Scheduler stopped\n");
-
-  /* Cancel timer */
-
-  struct itimerval it;
-  memset(&it, 0, sizeof(struct itimerval));
-  setitimer(ITIMER_REAL, &it, NULL);
-
+  if (getcontext(&g_main_context) == 0)
+    setcontext(&g_context_array[0].context);
+  
+  printf("[MAIN] Simulation stopped\n");
   return 0;
 }
